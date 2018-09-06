@@ -12,76 +12,64 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Properties;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class ConsumerDemoWithThread {
 
     public static void main(String[] args) {
-        new ConsumerDemoWithThread().run();
-    }
-
-    private ConsumerDemoWithThread() {
-
-    }
-
-    private void run() {
         Logger logger = LoggerFactory.getLogger(ConsumerDemoWithThread.class.getName());
 
         String bootstrapServers = "127.0.0.1:9092";
         String groupId = "my-sixth-application";
         String topic = "first_topic";
 
-        // latch for dealing with multiple threads
-        CountDownLatch latch = new CountDownLatch(1);
-
         // create the consumer runnable
         logger.info("Creating the consumer thread");
-        Runnable myConsumerRunnable = new ConsumerRunnable(
+        ConsumerRunnable myConsumerRunnable = new ConsumerRunnable(
                 bootstrapServers,
                 groupId,
-                topic,
-                latch
+                topic
         );
 
         // start the thread
-        Thread myThread = new Thread(myConsumerRunnable);
-        myThread.start();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<?> consumeFuture = executor.submit(myConsumerRunnable);
 
         // add a shutdown hook
+        Thread mainThread = Thread.currentThread();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             logger.info("Caught shutdown hook");
-            ((ConsumerRunnable) myConsumerRunnable).shutdown();
+            myConsumerRunnable.shutdown();
             try {
-                latch.await();
+                mainThread.join();
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
             logger.info("Application has exited");
-        }
-
-        ));
+        }));
 
         try {
-            latch.await();
+            consumeFuture.get();
         } catch (InterruptedException e) {
             logger.error("Application got interrupted", e);
+        } catch (ExecutionException e) {
+            logger.error("Error while consuming", e);
         } finally {
             logger.info("Application is closing");
         }
     }
 
-    public class ConsumerRunnable implements Runnable {
+    public static class ConsumerRunnable implements Runnable {
 
-        private CountDownLatch latch;
         private KafkaConsumer<String, String> consumer;
         private Logger logger = LoggerFactory.getLogger(ConsumerRunnable.class.getName());
 
         public ConsumerRunnable(String bootstrapServers,
                                 String groupId,
-                                String topic,
-                                CountDownLatch latch) {
-            this.latch = latch;
-
+                                String topic) {
             // create consumer configs
             Properties properties = new Properties();
             properties.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
@@ -113,8 +101,6 @@ public class ConsumerDemoWithThread {
                 logger.info("Received shutdown signal!");
             } finally {
                 consumer.close();
-                // tell our main code we're done with the consumer
-                latch.countDown();
             }
         }
 
